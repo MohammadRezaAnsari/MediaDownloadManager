@@ -6,20 +6,30 @@
 //
 
 import Foundation
-import XCTest
 
 public typealias ProgressBlock = (written: String, total: String, percentage: String)
 public typealias FailureBlock = (status: Int?, response: URLResponse?, error: Error?)
 
 
-public protocol DownloadManager {
+
+public protocol URLRequestAdapter {
+    func adaptedURLRequest(from urlRequest: URLRequest) -> URLRequest
+}
+
+public protocol DownloadManager: AnyObject {
     
     var urlSession: URLSession { get }
+    var urlRequestAdapters: [URLRequestAdapter] { get set }
     
     func download(with url: URL,
                   onProgress: @escaping (ProgressBlock) -> Void,
-                  onResult: @escaping (Data) -> Void,
-                  onError: @escaping (FailureBlock) -> Void)
+                  onResult:   @escaping (Data) -> Void,
+                  onError:    @escaping (FailureBlock) -> Void)
+    
+    func download(with request: URLRequest,
+                  onProgress: @escaping (ProgressBlock) -> Void,
+                  onResult:   @escaping (Data) -> Void,
+                  onError:    @escaping (FailureBlock) -> Void)
 }
 
 
@@ -27,7 +37,7 @@ public protocol DownloadManager {
 
 /// - Note: It should be `NSObject` because of `URLSessionDelegate`
 ///
-public class MediaDownloadManager: NSObject, DownloadManager {
+public class MediaDownloadManagerImplementation: NSObject, DownloadManager {
     
     // Byte Formatter to using for formatting downloading bytes
     private lazy var byteFormatter: ByteCountFormatter = {
@@ -44,6 +54,8 @@ public class MediaDownloadManager: NSObject, DownloadManager {
         guard let operation = OperationQueue.current else { return OperationQueue.main }
         return operation
     }()
+    
+    public var urlRequestAdapters: [URLRequestAdapter] = []
     
     
     private var progressBlock: ((ProgressBlock) -> Void)!
@@ -68,7 +80,7 @@ public class MediaDownloadManager: NSObject, DownloadManager {
     
     /// Download Media
     ///
-    /// - parameter url: The address of file which need to be download.
+    /// - parameter request: The URL Request of file which need to be download.
     /// - parameter caching: Ask for caching data which is downloaded. Default value is `true`.
     /// - parameter result: The result of downloading file as `Result<Data, Error>`.
     ///
@@ -76,7 +88,7 @@ public class MediaDownloadManager: NSObject, DownloadManager {
     ///
     /// - Warning: Never should call result in method definition directly. Only resultBlock call result completion.
     ///
-    public func download(with url: URL,
+    public func download(with request: URLRequest,
                          onProgress: @escaping (ProgressBlock) -> Void = { print($0) },
                          onResult:   @escaping (Data) -> Void          = { _ in },
                          onError:    @escaping (FailureBlock) -> Void  = { _ in })
@@ -86,7 +98,9 @@ public class MediaDownloadManager: NSObject, DownloadManager {
         resultBlock   = { onResult($0) }
         failureBlock  = { onError($0) }
         
-        // First check storage if file exist then return existing file/
+        guard let url = request.url else { return }
+        
+        // First check storage if file exist then return existing file
         if let name = url.pathComponents.last {
             
             let file: Data? = storage.checkFileExist(from: url.pathExtension.type.directory(with: rootDirectory), with: name)
@@ -99,8 +113,23 @@ public class MediaDownloadManager: NSObject, DownloadManager {
         
         // If could `NOT` find data from storage then download it.
         
-        let task = urlSession.downloadTask(with: url)
+        var adaptedRequest = request
+        for adapter in urlRequestAdapters {
+            adaptedRequest = adapter.adaptedURLRequest(from: adaptedRequest)
+        }
+        
+        let task = urlSession.downloadTask(with: adaptedRequest)
         task.resume()
+    }
+    
+    
+    public func download(with url: URL,
+                         onProgress: @escaping (ProgressBlock) -> Void = { print($0) },
+                         onResult:   @escaping (Data) -> Void          = { _ in },
+                         onError:    @escaping (FailureBlock) -> Void  = { _ in })
+    {
+        let request = URLRequest(url: url)
+        download(with: request, onProgress: onProgress, onResult: onResult, onError: onError)
     }
     
     
@@ -127,7 +156,7 @@ public class MediaDownloadManager: NSObject, DownloadManager {
 
 // MARK: - URLSessionDelegate & URLSessionDownloadDelegate
 
-extension MediaDownloadManager: URLSessionDelegate, URLSessionDownloadDelegate {
+extension MediaDownloadManagerImplementation: URLSessionDelegate, URLSessionDownloadDelegate {
     
     public func urlSession(_ session: URLSession,
                            downloadTask: URLSessionDownloadTask,
@@ -171,8 +200,11 @@ extension MediaDownloadManager: URLSessionDelegate, URLSessionDownloadDelegate {
     
 
     public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        let statusCode = (task.response as? HTTPURLResponse)?.statusCode
-        failureBlock((status: statusCode, response: task.response, error: error))
+        let statusCode = (task.response as? HTTPURLResponse)?.statusCode ?? 0
+        switch statusCode {
+        case 200...399: return
+        default: failureBlock((status: statusCode, response: task.response, error: error))
+        }
     }
     
     

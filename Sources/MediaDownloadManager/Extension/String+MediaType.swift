@@ -6,9 +6,9 @@
 //
 
 
-extension String {
+public extension String {
     var type: MediaType {
-        switch self {
+        switch self.lowercased() {
         case "png", "jpeg", "jpg": return .image
         case "mp4", "gif", "tiff", "mpeg", ".avi": return .video
         case "mp3", "aac", "oga", "wav": return .audio
